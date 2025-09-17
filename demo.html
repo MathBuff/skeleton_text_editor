@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Line Jump Cursor Example with Typing and Selection</title>
+  <style>
+    body {
+      background: black;
+      color: white;
+      font-family: monospace;
+      font-size: 18px;
+      user-select: none; /* Prevent default text selection */
+    }
+    #editor {
+      white-space: pre-wrap;
+      line-height: 1.5;
+      position: relative;
+    }
+    #cursor {
+      position: absolute;
+      width: 2px;
+      background: white;
+      animation: blink 1s step-end infinite;
+      pointer-events: none;
+    }
+    .selection-highlight {
+      position: absolute;
+      background: rgba(100, 149, 237, 0.3);
+      pointer-events: none;
+      border-radius: 1px;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+    <div id="editor"></div>
+    <div id="cursor"></div>
+
+<script>
+  // ==========================
+  // Variables
+  // ==========================
+
+  let INDENT_STRING = "    "; //Whatever you want tabs to be
+
+  let text = "sigmaMale(Hormones)\n    return hormones+2\nfarted='crack'\nsigmaMale(farted)";
+
+  const editor = document.getElementById("editor");
+  const cursor = document.getElementById("cursor");
+
+    //cursor
+        let cursorIndex = 0;
+        let desiredColumn = 0;
+        let blinkTimer;
+
+    // Selection variables
+        let selectionTarget1 = 0;
+        let selectionTarget2 = 0;
+        let isSelecting = false;
+        let mouseSelecting = false;
+
+        let clipboard = ""; // stores copied text
+
+    //double Click mouse selection
+        let lastClickTime = 0;
+        let doubleClickThreshold = 300; // ms
+
+
+//(MOUSE_EVENT_LISTENERS)======================================================================================
+  editor.addEventListener("mousedown", handleMouseDown);
+
+function handleMouseDown(e) {
+  const index = getIndexFromMousePosition(e.clientX, e.clientY);
+
+  const now = Date.now();
+  if (now - lastClickTime < doubleClickThreshold) {
+    // Double click → select word
+    selectWordAtIndex(index);
+  } else {
+    // Single click → normal cursor placement
+    cursorIndex = index;
+    selectionAnchor = index;        
+    selectionTarget1 = selectionTarget2 = index;
+    desiredColumn = getColumn(cursorIndex);
+    placeCursor(cursorIndex);
+    clearSelectionHighlights();
+  }
+
+  lastClickTime = now;
+
+  // Start normal mouse selection (drag)
+  mouseSelecting = true;
+  isSelecting = true;
+  e.preventDefault();
+}
+
+
+
+
+//----------------------------------------------------------------------------------------------------
+  document.addEventListener("mousemove", handleMouseMove);
+
+function handleMouseMove(e) {
+  if (!mouseSelecting) return;
+  const index = getIndexFromMousePosition(e.clientX, e.clientY);
+  cursorIndex = index;
+  desiredColumn = getColumn(cursorIndex);
+  placeCursor(cursorIndex);
+
+  updateSelection(cursorIndex); // normal selection
+}
+
+
+
+//----------------------------------------------------------------------------------------------------
+  document.addEventListener("mouseup", handleMouseUp);
+
+    function handleMouseUp(e) {
+      if (mouseSelecting) {
+        mouseSelecting = false;
+        if (selectionTarget1 === selectionTarget2) clearSelectionHighlights();
+      }
+    }
+
+//----------------------------------------------------------------------------------------------------
+function selectWordAtIndex(index) {
+  if (text.length === 0) return;
+
+  // Expand left to start of word
+  let start = index;
+  while (start > 0 && isLetterOrDigit(text[start - 1])) start--;
+
+  // Expand right to end of word
+  let end = index;
+  while (end < text.length && isLetterOrDigit(text[end])) end++;
+
+  selectionTarget1 = start;
+  selectionTarget2 = end;
+  cursorIndex = end;
+  selectionAnchor = start;
+
+  updateSelectionHighlights();
+  placeCursor(cursorIndex);
+}
+
+
+
+
+//(MOUSE_EVENT_HELPERS)======================================================================================
+  function getIndexFromMousePosition(clientX, clientY) {
+    const editorRect = editor.getBoundingClientRect();
+    const style = getComputedStyle(editor);
+    const lineHeight = parseFloat(style.lineHeight) || 27;
+
+    const clickedLine = Math.floor((clientY - editorRect.top) / lineHeight);
+    const relativeX = clientX - editorRect.left;
+
+    const lines = text.split('\n');
+    const lineIndex = Math.max(0, Math.min(clickedLine, lines.length - 1));
+    const line = lines[lineIndex];
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.font = style.font;
+
+    let closestIndex = 0, closestDist = Infinity;
+
+    for (let i = 0; i <= line.length; i++) {
+      const distance = Math.abs(ctx.measureText(line.substring(0, i)).width - relativeX);
+      if (distance < closestDist) {
+        closestDist = distance;
+        closestIndex = i;
+      }
+    }
+
+    let absoluteIndex = 0;
+    for (let i = 0; i < lineIndex; i++) absoluteIndex += lines[i].length + 1;
+    absoluteIndex += closestIndex;
+
+    return Math.max(0, Math.min(absoluteIndex, text.length));
+  }
+
+//(TEXT_EDITOR_DRIVERS)======================================================================================
+function updateEditor() {
+  editor.textContent = text;
+  // sanitize selection after text changes (text.length may have changed)
+  clampSelection();
+}
+
+
+// ---------- add this helper near the top ----------
+function clampSelection() {
+  // make sure selection targets are numbers
+  selectionTarget1 = Number(selectionTarget1);
+  selectionTarget2 = Number(selectionTarget2);
+
+  if (!Number.isFinite(selectionTarget1)) selectionTarget1 = 0;
+  if (!Number.isFinite(selectionTarget2)) selectionTarget2 = 0;
+
+  // if either was negative (or otherwise strange), log to help trace origin
+  if (selectionTarget1 < 0 || selectionTarget2 < 0) {
+    console.warn("clampSelection: detected negative selection before clamp:", selectionTarget1, selectionTarget2);
+    console.trace();
+  }
+
+  // ensure start <= end
+  if (selectionTarget1 > selectionTarget2) {
+    const tmp = selectionTarget1;
+    selectionTarget1 = selectionTarget2;
+    selectionTarget2 = tmp;
+  }
+
+  // clamp to valid range
+  selectionTarget1 = Math.max(0, Math.min(selectionTarget1, text.length));
+  selectionTarget2 = Math.max(0, Math.min(selectionTarget2, text.length));
+}
+// --------------------------------------------------
+
+
+
+//(SELECTION)======================================================================================
+  function clearSelectionHighlights() {
+    document.querySelectorAll('.selection-highlight').forEach(h => h.remove());
+  }
+
+//----------------------------------------------------------------------------------------------------
+function startSelection() {
+  // only set the anchor if we don't already have one
+  if (selectionAnchor === null) {
+    selectionAnchor = cursorIndex;
+    isSelecting = true;
+    // initialize selectionTargets to be the anchor (no visible selection yet)
+    selectionTarget1 = selectionTarget2 = cursorIndex;
+  }
+}
+
+//----------------------------------------------------------------------------------------------------
+function updateSelection(newIndex) {
+  // if we don't have an anchor, nothing to update
+  if (selectionAnchor === null) return;
+
+  // compute ordered targets from anchor -> newIndex
+  if (newIndex >= selectionAnchor) {
+    selectionTarget1 = selectionAnchor;
+    selectionTarget2 = newIndex;
+  } else {
+    selectionTarget1 = newIndex;
+    selectionTarget2 = selectionAnchor;
+  }
+
+  // draw selection
+  updateSelectionHighlights();
+}
+
+//----------------------------------------------------------------------------------------------------
+function clearSelection() {
+  // clear anchor and selection
+  selectionAnchor = null;
+  isSelecting = false;
+  selectionTarget1 = selectionTarget2 = cursorIndex;
+  updateSelectionHighlights();
+}
+
+
+//----------------------------------------------------------------------------------------------------
+function updateSelectionHighlights() {
+  clearSelectionHighlights();
+
+  // sanitize selection before using it
+  clampSelection();
+
+  if (selectionTarget1 === selectionTarget2) return;
+
+  const start = selectionTarget1;
+  const end = selectionTarget2;
+
+  const editorRect = editor.getBoundingClientRect();
+  const style = getComputedStyle(editor);
+  const lineHeight = parseFloat(style.lineHeight) || 27;
+
+  const lines = text.split('\n');
+  let charCount = 0;
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = style.font;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineStart = charCount;
+    const lineEnd = charCount + lines[i].length;
+
+    if (start <= lineEnd && end >= lineStart) {
+      const selStart = Math.max(start, lineStart) - lineStart;
+      const selEnd = Math.min(end, lineEnd) - lineStart;
+
+      const beforeWidth = ctx.measureText(lines[i].substring(0, selStart)).width;
+      const selWidth = ctx.measureText(lines[i].substring(selStart, selEnd)).width;
+
+      const highlight = document.createElement('div');
+      highlight.className = 'selection-highlight';
+      highlight.style.left = (editorRect.left + beforeWidth) + 'px';
+      highlight.style.top = (editorRect.top + i * lineHeight) + 'px';
+      highlight.style.width = selWidth + 'px';
+      highlight.style.height = lineHeight + 'px';
+
+      document.body.appendChild(highlight);
+    }
+    charCount += lines[i].length + 1;
+  }
+}
+
+//(CLIPBOARD_CONTROLS)=====================================================================================================
+    function copySelection() {
+        if (selectionTarget1 !== selectionTarget2) {
+            const start = Math.min(selectionTarget1, selectionTarget2);
+            const end = Math.max(selectionTarget1, selectionTarget2);
+            clipboard = text.slice(start, end); // copy the text inclusively
+        } else {
+            clipboard = ""; // nothing selected, clear clipboard
+        }
+        console.log("Copied text:", clipboard); // optional debug
+    }
+//----------------------------------------------------------------------------------------------------
+    function pasteClipboard() {
+        if (!clipboard) return; // nothing to paste
+
+        if (selectionTarget1 !== selectionTarget2) {
+            // If a selection exists, replace it
+            const start = Math.min(selectionTarget1, selectionTarget2);
+            const end = Math.max(selectionTarget1, selectionTarget2);
+            text = text.slice(0, start) + clipboard + text.slice(end);
+            cursorIndex = start + clipboard.length;
+            clearSelection();
+        } else {
+            // Otherwise, insert at cursor
+            text = text.slice(0, cursorIndex) + clipboard + text.slice(cursorIndex);
+            cursorIndex += clipboard.length;
+        }
+
+        desiredColumn = getColumn(cursorIndex);
+        updateEditor();
+        placeCursor(cursorIndex);
+    }
+//----------------------------------------------------------------------------------------------------
+    function cutSelection() {
+      if (selectionTarget1 !== selectionTarget2) {
+        // Copy the selection to the clipboard
+        copySelection();
+        // Delete the selected text
+        deleteCharacter();
+      }
+    }
+
+//(CURSOR_DISPLAY_&_LOCATION)======================================================================================
+  function resetBlink() {
+    cursor.style.opacity = "1";
+    cursor.style.animation = "none";
+    clearTimeout(blinkTimer);
+    blinkTimer = setTimeout(() => {
+      cursor.style.animation = "blink 1s step-end infinite";
+    }, 600);
+  }
+
+//----------------------------------------------------------------------------------------------------
+  function placeCursor(index) {
+    cursorIndex = Math.max(0, Math.min(index, text.length));
+
+    const textNode = editor.firstChild;
+    if (!textNode) return;
+
+    const editorRect = editor.getBoundingClientRect();
+    const style = getComputedStyle(editor);
+    const lineHeight = parseFloat(style.lineHeight) || 27;
+
+    const lines = text.split('\n');
+    let charCount = 0;
+    let currentLine = 0;
+    let posInLine = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (cursorIndex <= charCount + lines[i].length) {
+        currentLine = i;
+        posInLine = cursorIndex - charCount;
+        break;
+      }
+      charCount += lines[i].length + 1;
+    }
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.font = style.font;
+
+    const textWidth = ctx.measureText(lines[currentLine].substring(0, posInLine)).width;
+
+    cursor.style.left = (editorRect.left + textWidth) + "px";
+    cursor.style.top = (editorRect.top + currentLine * lineHeight) + "px";
+    cursor.style.height = lineHeight + "px";
+
+    resetBlink();
+  }
+
+//----------------------------------------------------------------------------------------------------
+  function getColumn(index) {
+    return index - (text.lastIndexOf("\n", index - 1) + 1);
+  }
+
+//(TYPING)======================================================================================
+  function insertCharacter(char) {
+    if (selectionTarget1 !== selectionTarget2) {
+      const start = Math.min(selectionTarget1, selectionTarget2);
+      const end = Math.max(selectionTarget1, selectionTarget2);
+      text = text.slice(0, start) + char + text.slice(end);
+      cursorIndex = start + char.length;
+      clearSelection();
+    } else {
+      text = text.slice(0, cursorIndex) + char + text.slice(cursorIndex);
+      cursorIndex += char.length;
+    }
+    desiredColumn = getColumn(cursorIndex);
+    updateEditor();
+    placeCursor(cursorIndex);
+  }
+//----------------------------------------------------------------------------------------------------
+  function deleteCharacter() {
+    if (selectionTarget1 !== selectionTarget2) {
+      const start = Math.min(selectionTarget1, selectionTarget2);
+      const end = Math.max(selectionTarget1, selectionTarget2);
+      text = text.slice(0, start) + text.slice(end);
+      cursorIndex = start;
+      clearSelection();
+    } else if (cursorIndex > 0) {
+      text = text.slice(0, cursorIndex - 1) + text.slice(cursorIndex);
+      cursorIndex--;
+    }
+    desiredColumn = getColumn(cursorIndex);
+    updateEditor();
+    placeCursor(cursorIndex);
+  }
+//----------------------------------------------------------------------------------------------------
+  function waitForKey() {
+    return new Promise(resolve => {
+      const handler = e => {
+        document.removeEventListener("keydown", handler);
+        resolve(e);
+      };
+      document.addEventListener("keydown", handler);
+    });
+  }
+
+//(WORD_JUMPING_SYSTEM)=============================================================================================
+function isLetterOrDigit(char) {
+  return /[a-zA-Z0-9]/.test(char);
+}
+//----------------------------------------------------------------------------------------------------
+function isSymbolOrWhitespace(char) {
+  return !isLetterOrDigit(char);
+}
+//----------------------------------------------------------------------------------------------------
+function jumpWordRight(index) {
+  if (index >= text.length) return text.length;
+
+  // Step 1: skip any whitespace at the current position
+  while (index < text.length && /\s/.test(text[index])) index++;
+
+  if (index >= text.length) return text.length;
+
+  // Step 2: jump to the next type change
+  const startChar = text[index];
+  const startType = isLetterOrDigit(startChar) ? 'letter' : 'symbol';
+
+  let i = index;
+  while (i < text.length) {
+    const char = text[i];
+    const charType = isLetterOrDigit(char) ? 'letter' : 'symbol';
+    if (charType !== startType) break;
+    i++;
+  }
+
+  return i;
+}
+//----------------------------------------------------------------------------------------------------
+function jumpWordLeft(index) {
+  if (index <= 0) return 0;
+
+  // Step 1: skip any whitespace immediately to the left
+  while (index > 0 && /\s/.test(text[index - 1])) index--;
+
+  if (index <= 0) return 0;
+
+  // Step 2: jump to the previous type change
+  const startChar = text[index - 1];
+  const startType = isLetterOrDigit(startChar) ? 'letter' : 'symbol';
+
+  let i = index;
+  while (i > 0) {
+    const char = text[i - 1];
+    const charType = isLetterOrDigit(char) ? 'letter' : 'symbol';
+    if (charType !== startType) break;
+    i--;
+  }
+
+  return i;
+}
+//----------------------------------------------------------------------------------------------------
+
+//(INDENTATION)======================================================================================
+
+function indentSelection() {
+  if (selectionTarget1 === selectionTarget2) {
+    // No selection → insert a single tab at cursor
+    insertCharacter(INDENT_STRING);
+    return;
+  }
+
+  const start = Math.min(selectionTarget1, selectionTarget2);
+  const end = Math.max(selectionTarget1, selectionTarget2);
+
+  const lines = text.split("\n");
+
+  let charCount = 0;
+  let newStart = start;
+  let newEnd = end;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineStart = charCount;
+    const lineEnd = charCount + lines[i].length;
+
+    // If the line overlaps the selection, add INDENT_STRING at start
+    if (lineEnd >= start && lineStart <= end) {
+      lines[i] = INDENT_STRING + lines[i];
+
+      // Adjust selection offsets
+      if (lineStart < start) newStart += INDENT_STRING.length;
+      newEnd += INDENT_STRING.length;
+    }
+
+    charCount += lines[i].length + 1; // +1 for newline
+  }
+
+  text = lines.join("\n");
+  selectionTarget1 = newStart;
+  selectionTarget2 = newEnd;
+
+    updateEditor();
+    placeCursor(selectionTarget2);
+    updateSelectionHighlights();
+}
+//----------------------------------------------------------------------------------------------------
+
+function unindentSelection() {
+  if (selectionTarget1 === selectionTarget2) return; // nothing selected
+
+  const start = Math.min(selectionTarget1, selectionTarget2);
+  const end = Math.max(selectionTarget1, selectionTarget2);
+
+  const origLines = text.split("\n");
+
+  // compute original start index of each line (based on original text)
+  const origLineStarts = new Array(origLines.length);
+  let pos = 0;
+  for (let i = 0; i < origLines.length; i++) {
+    origLineStarts[i] = pos;
+    pos += origLines[i].length + 1; // +1 for newline
+  }
+
+  // We'll build the new lines array from the originals
+  const newLines = origLines.slice();
+
+  let newStart = start;
+  let newEnd = end;
+
+  for (let i = 0; i < origLines.length; i++) {
+    const lineStart = origLineStarts[i];
+    const lineLength = origLines[i].length;
+    // lineEnd (index of the newline) = lineStart + lineLength
+
+    // compute selection overlap with this line in *original* coordinates
+    const selStartInLine = Math.max(0, start - lineStart);
+    const selEndInLine = Math.min(lineLength, end - lineStart);
+
+    // if no overlap (selection doesn't include any char of this line), skip it
+    if (selStartInLine >= selEndInLine) continue;
+
+    // determine how many prefix whitespace chars we would remove (based on original line)
+    let removeCount = 0;
+    if (origLines[i].startsWith(INDENT_STRING)) {
+      removeCount = INDENT_STRING.length;
+    } else {
+      const m = origLines[i].match(/^\s+/);
+      if (m) removeCount = Math.min(m[0].length, INDENT_STRING.length);
+    }
+
+    if (removeCount === 0) continue; // nothing to remove on this line
+
+    // update the line content (remove prefix spaces/tabs)
+    newLines[i] = origLines[i].slice(removeCount);
+
+    // compute how many of the removed chars were:
+    // - before the selection start in this line (should reduce global selection start)
+    // - inside the selected area of this line (should reduce global selection end)
+    const removedBeforeStart = Math.min(removeCount, selStartInLine);
+    const removedBeforeEnd = Math.min(removeCount, selEndInLine);
+    const removedInsideSelection = Math.max(0, removedBeforeEnd - removedBeforeStart);
+
+    if (lineStart < start) {
+      // some removed characters were before the overall selection start — shift it left
+      newStart -= removedBeforeStart;
+    }
+    // reduce newEnd by only the number of removed characters that were inside the selection
+    newEnd -= removedInsideSelection;
+  }
+
+  // join newLines into text and clamp selection
+  text = newLines.join("\n");
+  // sanitize and set selection targets
+  newStart = Math.max(0, newStart);
+  newEnd = Math.max(newStart, newEnd);
+  selectionTarget1 = newStart;
+  selectionTarget2 = newEnd;
+
+  updateEditor();
+  placeCursor(selectionTarget2);
+  updateSelectionHighlights();
+}
+
+//----------------------------------------------------------------------------------------------------
+
+function unindentCurrentLine() {
+  // Find the current line boundaries
+  const lineStart = text.lastIndexOf("\n", selectionTarget1 - 1) + 1;
+  const lineEnd = text.indexOf("\n", selectionTarget1);
+  const actualLineEnd = (lineEnd === -1 ? text.length : lineEnd);
+
+  const line = text.slice(lineStart, actualLineEnd);
+
+  let removeCount = 0;
+  if (line.startsWith(INDENT_STRING)) {
+    removeCount = INDENT_STRING.length;
+  } else {
+    const match = line.match(/^\s+/);
+    if (match) removeCount = Math.min(match[0].length, INDENT_STRING.length);
+  }
+
+  if (removeCount > 0) {
+    const newLine = line.slice(removeCount);
+    text = text.slice(0, lineStart) + newLine + text.slice(actualLineEnd);
+
+    // Adjust cursor and clear selection
+    selectionTarget1 = Math.max(lineStart, selectionTarget1 - removeCount);
+    selectionTarget2 = selectionTarget1;
+
+    updateEditor();
+    placeCursor(selectionTarget1);
+    updateSelectionHighlights();
+  }
+}
+
+// (TEXT_EDITOR_CONTROL_HELPERS) ======================================================================
+
+function handleArrowRight(shift, currentColumn, ctrl) {
+  event.preventDefault();
+
+  if (ctrl) {
+    const newIndex = jumpWordRight(cursorIndex);
+    if (shift) startSelection();
+    cursorIndex = newIndex;
+    if (shift) updateSelection(cursorIndex); else clearSelection();
+    placeCursor(cursorIndex);
+    desiredColumn = getColumn(cursorIndex);
+    return;
+  }
+
+  // Original single-step arrow right
+  if (shift) {
+    startSelection();
+    if (cursorIndex < text.length) cursorIndex++;
+    updateSelection(cursorIndex);
+  } else {
+    if (selectionTarget1 !== selectionTarget2) cursorIndex = Math.max(selectionTarget1, selectionTarget2);
+    clearSelection();
+    if (cursorIndex < text.length) cursorIndex++;
+  }
+
+  placeCursor(cursorIndex);
+  desiredColumn = getColumn(cursorIndex);
+}
+
+// ----------------------------------------------------------------------------------------------------
+
+function handleArrowLeft(shift, currentColumn, ctrl) {
+  event.preventDefault();
+
+  if (ctrl) {
+    const newIndex = jumpWordLeft(cursorIndex);
+    if (shift) startSelection();
+    cursorIndex = newIndex;
+    if (shift) updateSelection(cursorIndex); else clearSelection();
+    placeCursor(cursorIndex);
+    desiredColumn = getColumn(cursorIndex);
+    return;
+  }
+
+  // Original single-step arrow left
+  if (shift) {
+    startSelection();
+    if (cursorIndex > 0) cursorIndex--;
+    updateSelection(cursorIndex);
+  } else {
+    if (selectionTarget1 !== selectionTarget2) cursorIndex = Math.min(selectionTarget1, selectionTarget2);
+    clearSelection();
+    if (cursorIndex > 0) cursorIndex--;
+  }
+
+  placeCursor(cursorIndex);
+  desiredColumn = getColumn(cursorIndex);
+}
+
+
+// ----------------------------------------------------------------------------------------------------
+
+function handleArrowUp(shift) {
+  event.preventDefault();
+
+  // Find current line start
+  const currentLineStart = text.lastIndexOf("\n", cursorIndex - 1) + 1;
+
+  // If already on the first line, clamp to start of text
+  if (currentLineStart === 0) {
+    cursorIndex = 0;
+    if (shift) updateSelection(cursorIndex);
+    else clearSelection();
+    placeCursor(cursorIndex);
+    return;
+  }
+
+  if (shift) startSelection();
+
+  // Find previous line start/end
+  const prevLineEnd = currentLineStart - 1;
+  const prevLineStart = text.lastIndexOf("\n", prevLineEnd - 1) + 1;
+
+  const prevLineLength = prevLineEnd - prevLineStart;
+  const col = Math.min(desiredColumn, prevLineLength);
+
+  cursorIndex = prevLineStart + col;
+
+  if (shift) updateSelection(cursorIndex);
+  else clearSelection();
+
+  placeCursor(cursorIndex);
+}
+
+
+
+
+// ----------------------------------------------------------------------------------------------------
+
+function handleArrowDown(shift) {
+  event.preventDefault();
+
+  // Find current line start and end
+  const currentLineStart = text.lastIndexOf("\n", cursorIndex - 1) + 1;
+  let currentLineEnd = text.indexOf("\n", cursorIndex);
+  if (currentLineEnd === -1) currentLineEnd = text.length;
+
+  // If at last line, clamp to text end
+  if (currentLineEnd === text.length) {
+    cursorIndex = text.length;
+    if (shift) updateSelection(cursorIndex);
+    else clearSelection();
+    placeCursor(cursorIndex);
+    return;
+  }
+
+  if (shift) startSelection();
+
+  // Find next line start and end
+  const nextLineStart = currentLineEnd + 1;
+  let nextLineEnd = text.indexOf("\n", nextLineStart);
+  if (nextLineEnd === -1) nextLineEnd = text.length;
+
+  const nextLineLength = nextLineEnd - nextLineStart;
+  const col = Math.min(desiredColumn, nextLineLength);
+
+  cursorIndex = nextLineStart + col;
+
+  if (shift) updateSelection(cursorIndex);
+  else clearSelection();
+
+  placeCursor(cursorIndex);
+}
+
+// ----------------------------------------------------------------------------------------------------
+
+function handleHome(shift) {
+  event.preventDefault();
+
+  if (shift) {
+    startSelection();
+  }
+
+  const lineStart = text.lastIndexOf("\n", cursorIndex - 1);
+
+  cursorIndex = (lineStart === -1)
+    ? 0
+    : lineStart + 1;
+
+  if (shift) {
+    updateSelection(cursorIndex);
+  } else {
+    clearSelection();
+  }
+
+  desiredColumn = 0;
+  placeCursor(cursorIndex);
+}
+
+// ----------------------------------------------------------------------------------------------------
+
+function handleEnd(shift) {
+  event.preventDefault();
+
+  if (shift) {
+    startSelection();
+  }
+
+  const lineEnd = text.indexOf("\n", cursorIndex);
+
+  cursorIndex = (lineEnd === -1)
+    ? text.length
+    : lineEnd;
+
+  if (shift) {
+    updateSelection(cursorIndex);
+  } else {
+    clearSelection();
+  }
+
+  desiredColumn = getColumn(cursorIndex);
+  placeCursor(cursorIndex);
+}
+// ----------------------------------------------------------------------------------------------------
+function forwardDeleteCharacter() {
+  if (selectionTarget1 !== selectionTarget2) {
+    // If there’s a selection, delete it
+    const start = Math.min(selectionTarget1, selectionTarget2);
+    const end = Math.max(selectionTarget1, selectionTarget2);
+    text = text.slice(0, start) + text.slice(end);
+    cursorIndex = start;
+    clearSelection();
+  } else if (cursorIndex < text.length) {
+    // Otherwise, delete the character ahead of the cursor
+    text = text.slice(0, cursorIndex) + text.slice(cursorIndex + 1);
+  }
+  desiredColumn = getColumn(cursorIndex);
+  updateEditor();
+  placeCursor(cursorIndex);
+}
+
+
+//(CONTROL_LOOP)======================================================================================
+async function controlLoop() {
+  while (true) {
+    const e = await waitForKey();
+
+    console.log(
+      "Cursor:", cursorIndex,
+      "Selection:", selectionTarget1, "-", selectionTarget2
+    );
+
+    const lineStart = text.lastIndexOf("\n", cursorIndex - 1);
+    const currentColumn = cursorIndex - (lineStart === -1 ? 0 : lineStart + 1);
+    const shiftPressed = e.shiftKey;
+
+    // --------------------------------------------------------------------------------
+    // Arrow keys
+    // --------------------------------------------------------------------------------
+    if (e.key === "ArrowRight") {
+      handleArrowRight(shiftPressed, currentColumn, e.ctrlKey);
+    } else if (e.key === "ArrowLeft") {
+      handleArrowLeft(shiftPressed, currentColumn, e.ctrlKey);
+    } else if (e.key === "ArrowUp") {
+      handleArrowUp(shiftPressed);
+
+    } else if (e.key === "ArrowDown") {
+      handleArrowDown(shiftPressed);
+
+    } else if (e.key === "Home") {
+      handleHome(shiftPressed);
+
+    } else if (e.key === "End") {
+      handleEnd(shiftPressed);
+
+    // --------------------------------------------------------------------------------
+    // Editing keys
+    // --------------------------------------------------------------------------------
+    } else if (e.key === "Backspace") {
+      e.preventDefault();
+      deleteCharacter();
+
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      insertCharacter("\n");
+
+    } else if (e.key === "Delete") {
+        e.preventDefault();
+        forwardDeleteCharacter();
+
+    // --------------------------------------------------------------------------------
+    // Printable characters
+    // --------------------------------------------------------------------------------
+    } else if (
+      e.key.length === 1 &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey
+    ) {
+      e.preventDefault();
+      insertCharacter(e.key);
+
+    // --------------------------------------------------------------------------------
+    // Clipboard controls
+    // --------------------------------------------------------------------------------
+    }else if (e.key.toLowerCase() === "c" && e.ctrlKey) {
+        e.preventDefault();
+        copySelection();
+
+    }else if (e.key.toLowerCase() === "v" && e.ctrlKey) {
+        e.preventDefault();
+        pasteClipboard();
+
+    }else if (e.key.toLowerCase() === "x" && e.ctrlKey) {
+        e.preventDefault();
+        cutSelection();
+
+    // --------------------------------------------------------------------------------
+    // Indentation
+    // --------------------------------------------------------------------------------
+
+    }else if (e.key === "Tab" && e.shiftKey && selectionTarget1 === selectionTarget2) {
+        e.preventDefault();
+        unindentCurrentLine();
+
+    }else if (e.key === "Tab") {
+        e.preventDefault();
+        if (shiftPressed) {
+            unindentSelection();
+        } else {
+            indentSelection();
+        }
+
+    // --------------------------------------------------------------------------------
+    // Miscellaneous keys → clear selection if appropriate
+    // --------------------------------------------------------------------------------
+    
+    } else if (
+      !shiftPressed &&
+      !["Control", "Alt", "Meta", "CapsLock", "Tab"].includes(e.key)
+    ) {
+      clearSelection();
+    }
+
+    // --------------------------------------------------------------------------------
+    // Reset selection state
+    // --------------------------------------------------------------------------------
+    if (!shiftPressed && e.key !== "Shift") {
+      isSelecting = false;
+      selectionAnchor = null;
+    }
+  }
+}
+
+//(EXECUTION)======================================================================================
+  updateEditor();
+  placeCursor(0);
+  desiredColumn = 0;
+  controlLoop();
+//--------------------------------------------------------------------------------------------------
+</script>
+
+</body>
+</html>
+
+
+
+
+
+
