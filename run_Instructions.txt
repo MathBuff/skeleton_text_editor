@@ -1,0 +1,9 @@
+Just as a matter of fact, you cannot use modules in a plain HTML page.
+you have to use a server in order to get over a bunch of dumb security messages.
+I have a python script that runs a server in console to deliver the HTML page to the
+browser window.
+
+To run the program, you run the python script when your terminal is in the current directory with:
+
+python3 serve_https.py
+

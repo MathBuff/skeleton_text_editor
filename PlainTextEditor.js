@@ -2,7 +2,7 @@
 This class is meant to be able to point at an element full of plain text, and allow it to be
 editable like a programming text editor.
 */
-class PlainTextEditor{
+export class PlainTextEditor{
 constructor(textElement, routineNumber){
 
 //Tabs
@@ -12,7 +12,7 @@ constructor(textElement, routineNumber){
     this.text = "sigmaMale(Hormones)\n    return hormones+2\nfarted='crack'\nsigmaMale(farted)";
 
 //Element Grabs from main.html
-    this.editor = document.getElementById("editor");
+    this.editor = document.getElementById("plainTextEditor");
     this.cursor = document.getElementById("cursor");
 
 //cursor

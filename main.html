@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Line Jump Cursor Example with Typing and Selection</title>
+    <style>
+        body {
+            background: black;
+            color: white;
+            font-family: monospace;
+            font-size: 18px;
+            user-select: none; /* Prevent default text selection */
+            padding: 2rem;
+        }
+        #plainTextEditor {
+            white-space: pre-wrap;
+            line-height: 1.5;
+            position: relative;
+            background: #2d2d2d;
+            border: 1px solid #444;
+            padding: 1rem;
+            min-height: 300px;
+            border-radius: 8px;
+        }
+        #cursor {
+            position: absolute;
+            width: 2px;
+            background: white;
+            animation: blink 1s step-end infinite;
+            pointer-events: none;
+        }
+        .selection-highlight {
+            position: absolute;
+            background: rgba(100, 149, 237, 0.3);
+            pointer-events: none;
+            border-radius: 1px;
+        }
+        @keyframes blink {
+            50% {
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="plainTextEditor">
+        Hello I am an element you would like to edit
+    </div>
+    <div id="cursor"></div>
+
+    <!-- This is the script block for your code. -->
+    <script type="module">
+        import { PlainTextEditor } from './PlainTextEditor.js';
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            const editorElement = document.getElementById('plainTextEditor');
+            const cursorElement = document.getElementById('cursor');
+
+            if (editorElement && cursorElement) {
+                // Instantiate the editor here when the class is available
+                // new PlainTextEditor(editorElement, cursorElement);
+                // For now, the text will be visible and the styles should be correct.
+            }
+        });
+    </script>
+</body>
+</html>
