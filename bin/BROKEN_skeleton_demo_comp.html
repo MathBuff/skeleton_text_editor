@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Memory-Efficient Text Editor</title>
+  <style>
+    body {
+      background: black;
+      color: white;
+      font-family: monospace;
+      font-size: 18px;
+      user-select: none;
+      margin: 0;
+      padding: 20px;
+    }
+    #editor {
+      white-space: pre-wrap;
+      line-height: 1.5;
+      position: relative;
+    }
+    #cursor {
+      position: absolute;
+      width: 2px;
+      background: white;
+      animation: blink 1s step-end infinite;
+      pointer-events: none;
+    }
+    .selection-highlight {
+      position: absolute;
+      background: rgba(100, 149, 237, 0.3);
+      pointer-events: none;
+      border-radius: 1px;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="editor"></div>
+  <div id="cursor"></div>
+
+  <script>
+    console.log("Script starting...");
+
+    // ==========================
+    // Variables
+    // ==========================
+
+    let INDENT_STRING = "    ";
+    let text = "sigmaMale(Hormones)\n    return hormones+2\nfarted='crack'\nsigmaMale(farted)";
+
+    const editor = document.getElementById("editor");
+    const cursor = document.getElementById("cursor");
+
+    // cursor
+    let cursorIndex = 0;
+    let desiredColumn = 0;
+    let blinkTimer;
+
+    // Selection variables
+    let selectionTarget1 = 0;
+    let selectionTarget2 = 0;
+    let selectionAnchor = null;
+    let isSelecting = false;
+    let mouseSelecting = false;
+
+    let clipboard = "";
+
+    // double Click mouse selection
+    let lastClickTime = 0;
+    let doubleClickThreshold = 300;
+
+    // undo and redo stacks
+    let undoStack = [];
+    let redoStack = [];
+    const MAX_HISTORY = 100;
+
+    //(COMPRESSION_UTILITIES)===============================================================================
+
+    // Simple LZ77-style compression for strings
+    function compressString(str) {
+      if (str.length < 50) return str; // Don't compress very short strings
+      
+      const compressed = [];
+      let i = 0;
+      
+      while (i < str.length) {
+        let bestMatch = { length: 0, distance: 0 };
+        
+        // Look back up to 255 characters for matches
+        const lookbackStart = Math.max(0, i - 255);
+        
+        // Try to find the longest match
+        for (let j = lookbackStart; j < i; j++) {
+          let matchLength = 0;
+          while (
+            i + matchLength < str.length && 
+            str[j + matchLength] === str[i + matchLength] &&
+            matchLength < 255
+          ) {
+            matchLength++;
+          }
+          
+          if (matchLength > bestMatch.length && matchLength >= 3) {
+            bestMatch = { length: matchLength, distance: i - j };
+          }
+        }
+        
+        if (bestMatch.length > 0) {
+          // Encode as [distance, length]
+          compressed.push([bestMatch.distance, bestMatch.length]);
+          i += bestMatch.length;
+        } else {
+          // Literal character
+          compressed.push(str[i]);
+          i++;
+        }
+      }
+      
+      return compressed;
+    }
+
+    function decompressString(compressed) {
+      if (typeof compressed === 'string') return compressed; // Not compressed
+      
+      let result = '';
+      
+      for (const item of compressed) {
+        if (Array.isArray(item)) {
+          // [distance, length] - copy from earlier in result
+          const [distance, length] = item;
+          const startPos = result.length - distance;
+          
+          for (let i = 0; i < length; i++) {
+            result += result[startPos + i];
+          }
+        } else {
+          // Literal character
+          result += item;
+        }
+      }
+      
+      return result;
+    }
+
+    // Compress state object
+    function compressState(state) {
+      return {
+        text: compressString(state.text),
+        cursorIndex: state.cursorIndex,
+        selectionTarget1: state.selectionTarget1,
+        selectionTarget2: state.selectionTarget2,
+        compressed: true
+      };
+    }
+
+    // Decompress state object
+    function decompressState(compressedState) {
+      if (!compressedState.compressed) return compressedState; // Not compressed
+      
+      return {
+        text: decompressString(compressedState.text),
+        cursorIndex: compressedState.cursorIndex,
+        selectionTarget1: compressedState.selectionTarget1,
+        selectionTarget2: compressedState.selectionTarget2
+      };
+    }
+
+    //(UNDO_REDO)=================================================================================================
+    function saveState() {
+      // Create and compress current state
+      const currentState = {
+        text: text,
+        cursorIndex: cursorIndex,
+        selectionTarget1: selectionTarget1,
+        selectionTarget2: selectionTarget2
+      };
+      
+      const compressedState = compressState(currentState);
+      
+      // Push compressed state to undo stack
+      undoStack.push(compressedState);
+      
+      // Limit stack size
+      if (undoStack.length > MAX_HISTORY) undoStack.shift();
+      
+      // Clear redo stack whenever a new edit is made
+      redoStack = [];
+      
+      // Log compression info for demonstration
+      if (text.length > 100) {
+        const originalSize = JSON.stringify(currentState).length;
+        const compressedSize = JSON.stringify(compressedState).length;
+        const ratio = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
+        console.log(`Compression: ${originalSize} → ${compressedSize} bytes (${ratio}% smaller)`);
+      }
+    }
+
+    function undo() {
+      if (undoStack.length === 0) return;
+
+      // Compress and save current state to redo stack
+      const currentState = compressState({
+        text: text,
+        cursorIndex: cursorIndex,
+        selectionTarget1: selectionTarget1,
+        selectionTarget2: selectionTarget2
+      });
+      
+      redoStack.push(currentState);
+
+      // Get and decompress previous state
+      const compressedPrevState = undoStack.pop();
+      const prevState = decompressState(compressedPrevState);
+
+      // Restore state
+      text = prevState.text;
+      cursorIndex = prevState.cursorIndex;
+      selectionTarget1 = prevState.selectionTarget1;
+      selectionTarget2 = prevState.selectionTarget2;
+
+      updateEditor();
+      placeCursor(cursorIndex);
+      updateSelectionHighlights();
+    }
+
+    function redo() {
+      if (redoStack.length === 0) return;
+
+      // Compress and save current state to undo stack
+      const currentState = compressState({
+        text: text,
+        cursorIndex: cursorIndex,
+        selectionTarget1: selectionTarget1,
+        selectionTarget2: selectionTarget2
+      });
+      
+      undoStack.push(currentState);
+
+      // Get and decompress next state
+      const compressedNextState = redoStack.pop();
+      const nextState = decompressState(compressedNextState);
+
+      // Restore state
+      text = nextState.text;
+      cursorIndex = nextState.cursorIndex;
+      selectionTarget1 = nextState.selectionTarget1;
+      selectionTarget2 = nextState.selectionTarget2;
+
+      updateEditor();
+      placeCursor(cursorIndex);
+      updateSelectionHighlights();
+    }
+
+    //(TEXT_EDITOR_DRIVERS)======================================================================================
+    function updateEditor() {
+      editor.textContent = text;
+      clampSelection();
+    }
+
+    function clampSelection() {
+      selectionTarget1 = Number(selectionTarget1);
+      selectionTarget2 = Number(selectionTarget2);
+
+      if (!Number.isFinite(selectionTarget1)) selectionTarget1 = 0;
+      if (!Number.isFinite(selectionTarget2)) selectionTarget2 = 0;
+
+      if (selectionTarget1 < 0 || selectionTarget2 < 0) {
+        console.warn("clampSelection: detected negative selection before clamp:", selectionTarget1, selectionTarget2);
+        console.trace();
+      }
+
+      if (selectionTarget1 > selectionTarget2) {
+        const tmp = selectionTarget1;
+        selectionTarget1 = selectionTarget2;
+        selectionTarget2 = tmp;
+      }
+
+      selectionTarget1 = Math.max(0, Math.min(selectionTarget1, text.length));
+      selectionTarget2 = Math.max(0, Math.min(selectionTarget2, text.length));
+    }
+
+    //(SELECTION)======================================================================================
+    function clearSelectionHighlights() {
+      document.querySelectorAll('.selection-highlight').forEach(h => h.remove());
+    }
+
+    function startSelection() {
+      if (selectionAnchor === null) {
+        selectionAnchor = cursorIndex;
+        isSelecting = true;
+        selectionTarget1 = selectionTarget2 = cursorIndex;
+      }
+    }
+
+    function updateSelection(newIndex) {
+      if (selectionAnchor === null) return;
+
+      if (newIndex >= selectionAnchor) {
+        selectionTarget1 = selectionAnchor;
+        selectionTarget2 = newIndex;
+      } else {
+        selectionTarget1 = newIndex;
+        selectionTarget2 = selectionAnchor;
+      }
+
+      updateSelectionHighlights();
+    }
+
+    function clearSelection() {
+      selectionAnchor = null;
+      isSelecting = false;
+      selectionTarget1 = selectionTarget2 = cursorIndex;
+      updateSelectionHighlights();
+    }
+
+    function updateSelectionHighlights() {
+      clearSelectionHighlights();
+      clampSelection();
+
+      if (selectionTarget1 === selectionTarget2) return;
+
+      const start = selectionTarget1;
+      const end = selectionTarget2;
+
+      const editorRect = editor.getBoundingClientRect();
+      const style = getComputedStyle(editor);
+      const lineHeight = parseFloat(style.lineHeight) || 27;
+
+      const lines = text.split('\n');
+      let charCount = 0;
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.font = style.font;
+
+      for (let i = 0; i < lines.length; i++) {
+        const lineStart = charCount;
+        const lineEnd = charCount + lines[i].length;
+
+        if (start <= lineEnd && end >= lineStart) {
+          const selStart = Math.max(start, lineStart) - lineStart;
+          const selEnd = Math.min(end, lineEnd) - lineStart;
+
+          const beforeWidth = ctx.measureText(lines[i].substring(0, selStart)).width;
+          const selWidth = ctx.measureText(lines[i].substring(selStart, selEnd)).width;
+
+          const highlight = document.createElement('div');
+          highlight.className = 'selection-highlight';
+          highlight.style.left = (editorRect.left + beforeWidth) + 'px';
+          highlight.style.top = (editorRect.top + i * lineHeight) + 'px';
+          highlight.style.width = selWidth + 'px';
+          highlight.style.height = lineHeight + 'px';
+
+          document.body.appendChild(highlight);
+        }
+        charCount += lines[i].length + 1;
+      }
+    }
+
+    //(CLIPBOARD_CONTROLS)=====================================================================================================
+    function copySelection() {
+      if (selectionTarget1 !== selectionTarget2) {
+        const start = Math.min(selectionTarget1, selectionTarget2);
+        const end = Math.max(selectionTarget1, selectionTarget2);
+        clipboard = text.slice(start, end);
+      } else {
+        clipboard = "";
+      }
+      console.log("Copied text:", clipboard);
+    }
+
+    function pasteClipboard() {
+      if (!clipboard) return;
+      saveState();
+
+      if (selectionTarget1 !== selectionTarget2) {
+        const start = Math.min(selectionTarget1, selectionTarget2);
+        const end = Math.max(selectionTarget1, selectionTarget2);
+        text = text.slice(0, start) + clipboard + text.slice(end);
+        cursorIndex = start + clipboard.length;
+        clearSelection();
+      } else {
+        text = text.slice(0, cursorIndex) + clipboard + text.slice(cursorIndex);
+        cursorIndex += clipboard.length;
+      }
+
+      desiredColumn = getColumn(cursorIndex);
+      updateEditor();
+      placeCursor(cursorIndex);
+    }
+
+    function cutSelection() {
+      if (selectionTarget1 !== selectionTarget2) {
+        saveState();
+        copySelection();
+        deleteCharacter();
+      }
+    }
+
+    //(CURSOR_DISPLAY_&_LOCATION)======================================================================================
+    function resetBlink() {
+      cursor.style.opacity = "1";
+      cursor.style.animation = "none";
+      clearTimeout(blinkTimer);
+      blinkTimer = setTimeout(() => {
+        cursor.style.animation = "blink 1s step-end infinite";
+      }, 600);
+    }
+
+    function placeCursor(index) {
+      cursorIndex = Math.max(0, Math.min(index, text.length));
+
+      const textNode = editor.firstChild;
+      if (!textNode) return;
+
+      const editorRect = editor.getBoundingClientRect();
+      const style = getComputedStyle(editor);
+      const lineHeight = parseFloat(style.lineHeight) || 27;
+
+      const lines = text.split('\n');
+      let charCount = 0;
+      let currentLine = 0;
+      let posInLine = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (cursorIndex <= charCount + lines[i].length) {
+          currentLine = i;
+          posInLine = cursorIndex - charCount;
+          break;
+        }
+        charCount += lines[i].length + 1;
+      }
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.font = style.font;
+
+      const textWidth = ctx.measureText(lines[currentLine].substring(0, posInLine)).width;
+
+      cursor.style.left = (editorRect.left + textWidth) + "px";
+      cursor.style.top = (editorRect.top + currentLine * lineHeight) + "px";
+      cursor.style.height = lineHeight + "px";
+
+      resetBlink();
+    }
+
+    function getColumn(index) {
+      return index - (text.lastIndexOf("\n", index - 1) + 1);
+    }
+
+    //(TYPING)======================================================================================
+    function insertCharacter(char) {
+      saveState();
+
+      if (selectionTarget1 !== selectionTarget2) {
+        const start = Math.min(selectionTarget1, selectionTarget2);
+        const end = Math.max(selectionTarget1, selectionTarget2);
+        text = text.slice(0, start) + char + text.slice(end);
+        cursorIndex = start + char.length;
+        clearSelection();
+      } else {
+        text = text.slice(0, cursorIndex) + char + text.slice(cursorIndex);
+        cursorIndex += char.length;
+      }
+      desiredColumn = getColumn(cursorIndex);
+      updateEditor();
+      placeCursor(cursorIndex);
+    }
+
+    function deleteCharacter() {
+      saveState();
+
+      if (selectionTarget1 !== selectionTarget2) {
+        const start = Math.min(selectionTarget1, selectionTarget2);
+        const end = Math.max(selectionTarget1, selectionTarget2);
+        text = text.slice(0, start) + text.slice(end);
+        cursorIndex = start;
+        clearSelection();
+      } else if (cursorIndex > 0) {
+        text = text.slice(0, cursorIndex - 1) + text.slice(cursorIndex);
+        cursorIndex--;
+      }
+      desiredColumn = getColumn(cursorIndex);
+      updateEditor();
+      placeCursor(cursorIndex);
+    }
+
+    function forwardDeleteCharacter() {
+      saveState();
+
+      if (selectionTarget1 !== selectionTarget2) {
+        const start = Math.min(selectionTarget1, selectionTarget2);
+        const end = Math.max(selectionTarget1, selectionTarget2);
+        text = text.slice(0, start) + text.slice(end);
+        cursorIndex = start;
+        clearSelection();
+      } else if (cursorIndex < text.length) {
+        text = text.slice(0, cursorIndex) + text.slice(cursorIndex + 1);
+      }
+      desiredColumn = getColumn(cursorIndex);
+      updateEditor();
+      placeCursor(cursorIndex);
+    }
+
+    function waitForKey() {
+      return new Promise(resolve => {
+        const handler = e => {
+          document.removeEventListener("keydown", handler);
+          resolve(e);
+        };
+        document.addEventListener("keydown", handler);
+      });
+    }
+
+    //(WORD_JUMPING_SYSTEM)=============================================================================================
+    function isLetterOrDigit(char) {
+      return /[a-zA-Z0-9]/.test(char);
+    }
+
+    function jumpWordRight(index) {
+      if (index >= text.length) return text.length;
+
+      while (index < text.length && /\s/.test(text[index])) index++;
+      if (index >= text.length) return text.length;
+
+      const startChar = text[index];
+      const startType = isLetterOrDigit(startChar) ? 'letter' : 'symbol';
+
+      let i = index;
+      while (i < text.length) {
+        const char = text[i];
+        const charType = isLetterOrDigit(char) ? 'letter' : 'symbol';
+        if (charType !== startType) break;
+        i++;
+      }
+
+      return i;
+    }
+
+    function jumpWordLeft(index) {
+      if (index <= 0) return 0;
+
+      while (index > 0 && /\s/.test(text[index - 1])) index--;
+      if (index <= 0) return 0;
+
+      const startChar = text[index - 1];
+      const startType = isLetterOrDigit(startChar) ? 'letter' : 'symbol';
+
+      let i = index;
+      while (i > 0) {
+        const char = text[i - 1];
+        const charType = isLetterOrDigit(char) ? 'letter' : 'symbol';
+        if (charType !== startType) break;
+        i--;
+      }
+
+      return i;
+    }
+
+    //(MOUSE_EVENT_LISTENERS)======================================================================================
+    function getIndexFromMousePosition(clientX, clientY) {
+      const editorRect = editor.getBoundingClientRect();
+      const style = getComputedStyle(editor);
+      const lineHeight = parseFloat(style.lineHeight) || 27;
+
+      const clickedLine = Math.floor((clientY - editorRect.top) / lineHeight);
+      const relativeX = clientX - editorRect.left;
+
+      const lines = text.split('\n');
+      const lineIndex = Math.max(0, Math.min(clickedLine, lines.length - 1));
+      const line = lines[lineIndex];
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.font = style.font;
+
+      let closestIndex = 0, closestDist = Infinity;
+
+      for (let i = 0; i <= line.length; i++) {
+        const distance = Math.abs(ctx.measureText(line.substring(0, i)).width - relativeX);
+        if (distance < closestDist) {
+          closestDist = distance;
+          closestIndex = i;
+        }
+      }
+
+      let absoluteIndex = 0;
+      for (let i = 0; i < lineIndex; i++) absoluteIndex += lines[i].length + 1;
+      absoluteIndex += closestIndex;
+
+      return Math.max(0, Math.min(absoluteIndex, text.length));
+    }
+
+    function selectWordAtIndex(index) {
+      if (text.length === 0) return;
+
+      let start = index;
+      while (start > 0 && isLetterOrDigit(text[start - 1])) start--;
+
+      let end = index;
+      while (end < text.length && isLetterOrDigit(text[end])) end++;
+
+      selectionTarget1 = start;
+      selectionTarget2 = end;
+      cursorIndex = end;
+      selectionAnchor = start;
+
+      updateSelectionHighlights();
+      placeCursor(cursorIndex);
+    }
+
+    function handleMouseDown(e) {
+      const index = getIndexFromMousePosition(e.clientX, e.clientY);
+
+      const now = Date.now();
+      if (now - lastClickTime < doubleClickThreshold) {
+        selectWordAtIndex(index);
+      } else {
+        cursorIndex = index;
+        selectionAnchor = index;        
+        selectionTarget1 = selectionTarget2 = index;
+        desiredColumn = getColumn(cursorIndex);
+        placeCursor(cursorIndex);
+        clearSelectionHighlights();
+      }
+
+      lastClickTime = now;
+      mouseSelecting = true;
+      isSelecting = true;
+      e.preventDefault();
+    }
+
+    function handleMouseMove(e) {
+      if (!mouseSelecting) return;
+      const index = getIndexFromMousePosition(e.clientX, e.clientY);
+      cursorIndex = index;
+      desiredColumn = getColumn(cursorIndex);
+      placeCursor(cursorIndex);
+      updateSelection(cursorIndex);
+    }
+
+    function handleMouseUp(e) {
+      if (mouseSelecting) {
+        mouseSelecting = false;
+        if (selectionTarget1 === selectionTarget2) clearSelectionHighlights();
+      }
+    }
+
+    //(INDENTATION)======================================================================================
+    function indentSelection() {
+      saveState();
+      if (selectionTarget1 === selectionTarget2) {
+        insertCharacter(INDENT_STRING);
+        return;
+      }
+
+      const start = Math.min(selectionTarget1, selectionTarget2);
+      const end = Math.max(selectionTarget1, selectionTarget2);
+
+      const lines = text.split("\n");
+
+      let charCount = 0;
+      let newStart = start;
+      let newEnd = end;
+
+      for (let i = 0; i < lines.length; i++) {
+        const lineStart = charCount;
+        const lineEnd = charCount + lines[i].length;
+
+        if (lineEnd >= start && lineStart <= end) {
+          lines[i] = INDENT_STRING + lines[i];
+
+          if (lineStart < start) newStart += INDENT_STRING.length;
+          newEnd += INDENT_STRING.length;
+        }
+
+        charCount += lines[i].length + 1;
+      }
+
+      text = lines.join("\n");
+      selectionTarget1 = newStart;
+      selectionTarget2 = newEnd;
+
+      updateEditor();
+      placeCursor(selectionTarget2);
+      updateSelectionHighlights();
+    }
+
+    function unindentSelection() {
+      if (selectionTarget1 === selectionTarget2) return;
+      saveState();
+
+      const start = Math.min(selectionTarget1, selectionTarget2);
+      const end = Math.max(selectionTarget1, selectionTarget2);
+
+      const origLines = text.split("\n");
+
+      const origLineStarts = new Array(origLines.length);
+      let pos = 0;
+      for (let i = 0; i < origLines.length; i++) {
+        origLineStarts[i] = pos;
+        pos += origLines[i].length + 1;
+      }
+
+      const newLines = origLines.slice();
+
+      let newStart = start;
+      let newEnd = end;
+
+      for (let i = 0; i < origLines.length; i++) {
+        const lineStart = origLineStarts[i];
+        const lineLength = origLines[i].length;
+
+        const selStartInLine = Math.max(0, start - lineStart);
+        const selEndInLine = Math.min(lineLength, end - lineStart);
+
+        if (selStartInLine >= selEndInLine) continue;
+
+        let removeCount = 0;
+        if (origLines[i].startsWith(INDENT_STRING)) {
+          removeCount = INDENT_STRING.length;
+        } else {
+          const m = origLines[i].match(/^\s+/);
+          if (m) removeCount = Math.min(m[0].length, INDENT_STRING.length);
+        }
+
+        if (removeCount === 0) continue;
+
+        newLines[i] = origLines[i].slice(removeCount);
+
+        const removedBeforeStart = Math.min(removeCount, selStartInLine);
+        const removedBeforeEnd = Math.min(removeCount, selEndInLine);
+        const removedInsideSelection = Math.max(0, removedBeforeEnd - removedBeforeStart);
+
+        if (lineStart < start) {
+          newStart -= removedBeforeStart;
+        }
+        newEnd -= removedInsideSelection;
+      }
+
+      text = newLines.join("\n");
+      newStart = Math.max(0, newStart);
+      newEnd = Math.max(newStart, newEnd);
+      selectionTarget1 = newStart;
+      selectionTarget2 = newEnd;
+
+      updateEditor();
+      placeCursor(selectionTarget2);
+      updateSelectionHighlights();
+    }
+
+    function unindentCurrentLine() {
+      saveState();
+      const lineStart = text.lastIndexOf("\n", selectionTarget1 - 1) + 1;
+      const lineEnd = text.indexOf("\n", selectionTarget1);
+      const actualLineEnd = (lineEnd === -1 ? text.length : lineEnd);
+
+      const line = text.slice(lineStart, actualLineEnd);
+
+      let removeCount = 0;
+      if (line.startsWith(INDENT_STRING)) {
+        removeCount = INDENT_STRING.length;
+      } else {
+        const match = line.match(/^\s+/);
+        if (match) removeCount = Math.min(match[0].length, INDENT_STRING.length);
+      }
+
+      if (removeCount > 0) {
+        const newLine = line.slice(removeCount);
+        text = text.slice(0, lineStart) + newLine + text.slice(actualLineEnd);
+
+        selectionTarget1 = Math.max(lineStart, selectionTarget1 - removeCount);
+        selectionTarget2 = selectionTarget1;
+
+        updateEditor();
+        placeCursor(selectionTarget1);
+        updateSelectionHighlights();
+      }
+    }
+
+    //(ARROW_KEY_HANDLERS)======================================================================================
+    function handleArrowRight(shift, ctrl) {
+      if (ctrl) {
+        const newIndex = jumpWordRight(cursorIndex);
+        if (shift) startSelection();
+        cursorIndex = newIndex;
+        if (shift) updateSelection(cursorIndex); else clearSelection();
+        placeCursor(cursorIndex);
+        desiredColumn = getColumn(cursorIndex);
+        return;
+      }
+
+      if (shift) {
+        startSelection();
+        if (cursorIndex < text.length) cursorIndex++;
+        updateSelection(cursorIndex);
+      } else {
+        if (selectionTarget1 !== selectionTarget2) cursorIndex = Math.max(selectionTarget1, selectionTarget2);
+        clearSelection();
+        if (cursorIndex < text.length) cursorIndex++;
+      }
+
+      placeCursor(cursorIndex);
+      desiredColumn = getColumn(cursorIndex);
+    }
+
+    function handleArrowLeft(shift, ctrl) {
+      if (ctrl) {
+        const newIndex = jumpWordLeft(cursorIndex);
+        if (shift) startSelection();
+        cursorIndex = newIndex;
+        if (shift) updateSelection(cursorIndex); else clearSelection();
+        placeCursor(cursorIndex);
+        desiredColumn = getColumn(cursorIndex);
+        return;
+      }
+
+      if (shift) {
+        startSelection();
+        if (cursorIndex > 0) cursorIndex--;
+        updateSelection(cursorIndex);
+      } else {
+        if (selectionTarget1 !== selectionTarget2) cursorIndex = Math.min(selectionTarget1, selectionTarget2);
+        clearSelection();
+        if (cursorIndex > 0) cursorIndex--;
+      }
+
+      placeCursor(cursorIndex);
+      desiredColumn = getColumn(cursorIndex);
+    }
+
+    function handleArrowUp(shift) {
+      const currentLineStart = text.lastIndexOf("\n", cursorIndex - 1) + 1;
+
+      if (currentLineStart === 0) {
+        cursorIndex = 0;
+        if (shift) updateSelection(cursorIndex);
+        else clearSelection();
+        placeCursor(cursorIndex);
+        return;
+      }
+
+      if (shift) startSelection();
+
+      const prevLineEnd = currentLineStart - 1;
+      const prevLineStart = text.lastIndexOf("\n", prevLineEnd - 1) + 1;
+
+      const prevLineLength = prevLineEnd - prevLineStart;
+      const col = Math.min(desiredColumn, prevLineLength);
+
+      cursorIndex = prevLineStart + col;
+
+      if (shift) updateSelection(cursorIndex);
+      else clearSelection();
+
+      placeCursor(cursorIndex);
+    }
+
+    function handleArrowDown(shift) {
+      const currentLineStart = text.lastIndexOf("\n", cursorIndex - 1) + 1;
+      let currentLineEnd = text.indexOf("\n", cursorIndex);
+      if (currentLineEnd === -1) currentLineEnd = text.length;
+
+      if (currentLineEnd === text.length) {
+        cursorIndex = text.length;
+        if (shift) updateSelection(cursorIndex);
+        else clearSelection();
+        placeCursor(cursorIndex);
+        return;
+      }
+
+      if (shift) startSelection();
+
+      const nextLineStart = currentLineEnd + 1;
+      let nextLineEnd = text.indexOf("\n", nextLineStart);
+      if (nextLineEnd === -1) nextLineEnd = text.length;
+
+      const nextLineLength = nextLineEnd - nextLineStart;
+      const col = Math.min(desiredColumn, nextLineLength);
+
+      cursorIndex = nextLineStart + col;
+
+      if (shift) updateSelection(cursorIndex);
+      else clearSelection();
+
+      placeCursor(cursorIndex);
+    }
+
+    function handleHome(shift) {
+      if (shift) startSelection();
+
+      const lineStart = text.lastIndexOf("\n", cursorIndex - 1);
+      cursorIndex = (lineStart === -1) ? 0 : lineStart + 1;
+
+      if (shift) updateSelection(cursorIndex);
+      else clearSelection();
+
+      desiredColumn = 0;
+      placeCursor(cursorIndex);
+    }
+
+    function handleEnd(shift) {
+      if (shift) startSelection();
+
+      const lineEnd = text.indexOf("\n", cursorIndex);
+      cursorIndex = (lineEnd === -1) ? text.length : lineEnd;
+
+      if (shift) updateSelection(cursorIndex);
+      else clearSelection();
+
+      desiredColumn = getColumn(cursorIndex);
+      placeCursor(cursorIndex);
+    }
+
+    //(CONTROL_LOOP)======================================================================================
+    async function controlLoop() {
+      while (true) {
+        const e = await waitForKey();
+
+        const shiftPressed = e.shiftKey;
+
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          handleArrowRight(shiftPressed, e.ctrlKey);
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          handleArrowLeft(shiftPressed, e.ctrlKey);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          handleArrowUp(shiftPressed);
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          handleArrowDown(shiftPressed);
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          handleHome(shiftPressed);
+        } else if (e.key === "End") {
+          e.preventDefault();
+          handleEnd(shiftPressed);
+        } else if (e.key === "Backspace") {
+          e.preventDefault();
+          deleteCharacter();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          insertCharacter("\n");
+        } else if (e.key === "Delete") {
+          e.preventDefault();
+          forwardDeleteCharacter();
+        } else if (
+          e.key.length === 1 &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          !e.metaKey
+        ) {
+          e.preventDefault();
+          insertCharacter(e.key);
+        } else if (e.key.toLowerCase() === "c" && e.ctrlKey) {
+          e.preventDefault();
+          copySelection();
+        } else if (e.key.toLowerCase() === "v" && e.ctrlKey) {
+          e.preventDefault();
+          pasteClipboard();
+        } else if (e.key.toLowerCase() === "x" && e.ctrlKey) {
+          e.preventDefault();
+          cutSelection();
+        } else if (e.key === "Tab" && e.shiftKey && selectionTarget1 === selectionTarget2) {
+          e.preventDefault();
+          unindentCurrentLine();
+        } else if (e.key === "Tab") {
+          e.preventDefault();
+          if (shiftPressed) {
+            unindentSelection();
+          } else {
+            indentSelection();
+          }
+        } else if (e.ctrlKey && e.key.toLowerCase() === "z") {
+          e.preventDefault();
+          undo();
+        } else if (e.ctrlKey && e.key.toLowerCase() === "y") {
+          e.preventDefault();
+          redo();
+        } else if (!shiftPressed && !["Control", "Alt", "Meta", "CapsLock", "Tab"].includes(e.key)) {
+          clearSelection();
+        }
+      }
+    }
+
+    //(EXECUTION)======================================================================================
+    try {
+      console.log("Starting editor...");
+      updateEditor();
+      console.log("Editor updated");
+      placeCursor(0);
+      console.log("Cursor placed");
+      desiredColumn = 0;
+      
+      // Add event listeners
+      editor.addEventListener("mousedown", handleMouseDown);
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+      
+      console.log("About to start control loop");
+      controlLoop();
+      console.log("Control loop started");
+    } catch (error) {
+      console.error("Error starting editor:", error);
+      document.body.innerHTML = "<h1>Error: " + error.message + "</h1>";
+    }
+  </script>
+</body>
+</html>

@@ -67,9 +67,77 @@
         let lastClickTime = 0;
         let doubleClickThreshold = 300; // ms
 
+    //undo and redo stacks
+        let undoStack = [];
+        let redoStack = [];
+        const MAX_HISTORY = 100; // optional limit
+
+//(UNDO_REDO)=================================================================================================
+function saveState() {
+  // Push current state to undo stack
+  undoStack.push({
+    text: text,
+    cursorIndex: cursorIndex,
+    selectionTarget1: selectionTarget1,
+    selectionTarget2: selectionTarget2
+  });
+  
+  // Limit stack size
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
+  
+  // Clear redo stack whenever a new edit is made
+  redoStack = [];
+}
+
+//----------------------------------------------------------------------------------------------------
+function undo() {
+  if (undoStack.length === 0) return;
+
+  // Save current state to redo stack
+  redoStack.push({
+    text: text,
+    cursorIndex: cursorIndex,
+    selectionTarget1: selectionTarget1,
+    selectionTarget2: selectionTarget2
+  });
+
+  const prevState = undoStack.pop();
+
+  text = prevState.text;
+  cursorIndex = prevState.cursorIndex;
+  selectionTarget1 = prevState.selectionTarget1;
+  selectionTarget2 = prevState.selectionTarget2;
+
+  updateEditor();
+  placeCursor(cursorIndex);
+  updateSelectionHighlights();
+}
+//----------------------------------------------------------------------------------------------------
+function redo() {
+  if (redoStack.length === 0) return;
+
+  // Save current state to undo stack
+  undoStack.push({
+    text: text,
+    cursorIndex: cursorIndex,
+    selectionTarget1: selectionTarget1,
+    selectionTarget2: selectionTarget2
+  });
+
+  const nextState = redoStack.pop();
+
+  text = nextState.text;
+  cursorIndex = nextState.cursorIndex;
+  selectionTarget1 = nextState.selectionTarget1;
+  selectionTarget2 = nextState.selectionTarget2;
+
+  updateEditor();
+  placeCursor(cursorIndex);
+  updateSelectionHighlights();
+}
 
 //(MOUSE_EVENT_LISTENERS)======================================================================================
-  editor.addEventListener("mousedown", handleMouseDown);
+editor.addEventListener("mousedown", handleMouseDown);
 
 function handleMouseDown(e) {
   const index = getIndexFromMousePosition(e.clientX, e.clientY);
@@ -146,8 +214,6 @@ function selectWordAtIndex(index) {
 }
 
 
-
-
 //(MOUSE_EVENT_HELPERS)======================================================================================
   function getIndexFromMousePosition(clientX, clientY) {
     const editorRect = editor.getBoundingClientRect();
@@ -216,9 +282,6 @@ function clampSelection() {
   selectionTarget1 = Math.max(0, Math.min(selectionTarget1, text.length));
   selectionTarget2 = Math.max(0, Math.min(selectionTarget2, text.length));
 }
-// --------------------------------------------------
-
-
 
 //(SELECTION)======================================================================================
   function clearSelectionHighlights() {
@@ -324,7 +387,9 @@ function updateSelectionHighlights() {
     }
 //----------------------------------------------------------------------------------------------------
     function pasteClipboard() {
+
         if (!clipboard) return; // nothing to paste
+        saveState();
 
         if (selectionTarget1 !== selectionTarget2) {
             // If a selection exists, replace it
@@ -345,12 +410,15 @@ function updateSelectionHighlights() {
     }
 //----------------------------------------------------------------------------------------------------
     function cutSelection() {
+
       if (selectionTarget1 !== selectionTarget2) {
+        saveState();
         // Copy the selection to the clipboard
         copySelection();
         // Delete the selected text
         deleteCharacter();
       }
+
     }
 
 //(CURSOR_DISPLAY_&_LOCATION)======================================================================================
@@ -408,6 +476,8 @@ function updateSelectionHighlights() {
 
 //(TYPING)======================================================================================
   function insertCharacter(char) {
+    saveState();
+
     if (selectionTarget1 !== selectionTarget2) {
       const start = Math.min(selectionTarget1, selectionTarget2);
       const end = Math.max(selectionTarget1, selectionTarget2);
@@ -424,6 +494,9 @@ function updateSelectionHighlights() {
   }
 //----------------------------------------------------------------------------------------------------
   function deleteCharacter() {
+
+    saveState();
+
     if (selectionTarget1 !== selectionTarget2) {
       const start = Math.min(selectionTarget1, selectionTarget2);
       const end = Math.max(selectionTarget1, selectionTarget2);
@@ -508,6 +581,7 @@ function jumpWordLeft(index) {
 //(INDENTATION)======================================================================================
 
 function indentSelection() {
+  saveState();
   if (selectionTarget1 === selectionTarget2) {
     // No selection → insert a single tab at cursor
     insertCharacter(INDENT_STRING);
@@ -550,7 +624,9 @@ function indentSelection() {
 //----------------------------------------------------------------------------------------------------
 
 function unindentSelection() {
+
   if (selectionTarget1 === selectionTarget2) return; // nothing selected
+  saveState();
 
   const start = Math.min(selectionTarget1, selectionTarget2);
   const end = Math.max(selectionTarget1, selectionTarget2);
@@ -628,6 +704,7 @@ function unindentSelection() {
 //----------------------------------------------------------------------------------------------------
 
 function unindentCurrentLine() {
+  saveState();
   // Find the current line boundaries
   const lineStart = text.lastIndexOf("\n", selectionTarget1 - 1) + 1;
   const lineEnd = text.indexOf("\n", selectionTarget1);
@@ -843,6 +920,9 @@ function handleEnd(shift) {
 }
 // ----------------------------------------------------------------------------------------------------
 function forwardDeleteCharacter() {
+    saveState();
+
+
   if (selectionTarget1 !== selectionTarget2) {
     // If there’s a selection, delete it
     const start = Math.min(selectionTarget1, selectionTarget2);
@@ -865,10 +945,12 @@ async function controlLoop() {
   while (true) {
     const e = await waitForKey();
 
-    console.log(
-      "Cursor:", cursorIndex,
-      "Selection:", selectionTarget1, "-", selectionTarget2
-    );
+    console.log( 
+        "Cursor:", cursorIndex, 
+        "Selection:", selectionTarget1, "-", selectionTarget2, 
+        "Undo Stack:", undoStack.length, 
+        "Redo Stack:", redoStack.length 
+        );
 
     const lineStart = text.lastIndexOf("\n", cursorIndex - 1);
     const currentColumn = cursorIndex - (lineStart === -1 ? 0 : lineStart + 1);
@@ -952,24 +1034,23 @@ async function controlLoop() {
         }
 
     // --------------------------------------------------------------------------------
-    // Miscellaneous keys → clear selection if appropriate
+    // Undo & Redo
     // --------------------------------------------------------------------------------
-    
-    } else if (
-      !shiftPressed &&
-      !["Control", "Alt", "Meta", "CapsLock", "Tab"].includes(e.key)
-    ) {
-      clearSelection();
-    }
+    } else if (e.ctrlKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+    } else if (e.ctrlKey && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
 
     // --------------------------------------------------------------------------------
-    // Reset selection state
+    // Miscellaneous keys → clear selection if appropriate
     // --------------------------------------------------------------------------------
-    if (!shiftPressed && e.key !== "Shift") {
-      isSelecting = false;
-      selectionAnchor = null;
+
+    } else if (!shiftPressed && !["Control", "Alt", "Meta", "CapsLock", "Tab"].includes(e.key)) {
+        clearSelection();
     }
-  }
+}
 }
 
 //(EXECUTION)======================================================================================
