@@ -3,7 +3,12 @@ you have to use a server in order to get over a bunch of dumb security messages.
 I have a python script that runs a server in console to deliver the HTML page to the
 browser window.
 
-To run the program, you run the python script when your terminal is in the current directory with:
+with your terminal is in the current directory
+
+To run the program, give permissions to the python script to run:
+chmod +x serve_https.py
+
+Then you run the python script with:
 
 python3 serve_https.py
 

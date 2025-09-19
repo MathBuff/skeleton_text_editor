@@ -3,65 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <title>Line Jump Cursor Example with Typing and Selection</title>
-    <style>
-        body {
-            background: black;
-            color: white;
-            font-family: monospace;
-            font-size: 18px;
-            user-select: none; /* Prevent default text selection */
-            padding: 2rem;
-        }
-        #plainTextEditor {
-            white-space: pre-wrap;
-            line-height: 1.5;
-            position: relative;
-            background: #2d2d2d;
-            border: 1px solid #444;
-            padding: 1rem;
-            min-height: 300px;
-            border-radius: 8px;
-        }
-        #cursor {
-            position: absolute;
-            width: 2px;
-            background: white;
-            animation: blink 1s step-end infinite;
-            pointer-events: none;
-        }
-        .selection-highlight {
-            position: absolute;
-            background: rgba(100, 149, 237, 0.3);
-            pointer-events: none;
-            border-radius: 1px;
-        }
-        @keyframes blink {
-            50% {
-                opacity: 0;
-            }
-        }
-    </style>
+    <link rel="icon" href="icon.png" type="image/png">
+
+
+<style>
+*{
+    margin: 0px;
+    padding: 0px;
+    background: transparent;
+    /*TextStuff*/
+    color: white;
+    font-family: "Times New Roman", Times, serif;
+    font-size: 18px;
+    line-height: 1.5;
+    /* REMOVED: user-select: none; This was preventing contentEditable from working */
+}
+body {
+    background: black;
+    /* Allow text selection on body and other elements, but editor will handle its own */
+    user-select: none;
+}
+
+/* Target the editor element specifically */
+[contenteditable="true"] {
+    user-select: text !important; /* Allow text selection in contentEditable elements */
+    outline: none; /* Remove focus outline */
+}
+
+#plainTextEditor {
+    display: inline-block;   
+    min-height: 1.5em;
+    white-space: pre-wrap;   /* Changed from 'pre' to 'pre-wrap' to match editor */
+    position: relative;      
+    overflow: auto;          
+    text-align: left;        
+    vertical-align: top;     
+}
+
+h1 {
+  font-family: "Times New Roman", Times, serif;
+  color: #ffa500; /* Sets the text color to orange */
+  border: 2px solid #ffa500; /* Adds a 2px solid orange border */
+  text-shadow: none; /* Removes any text shadow */
+}
+
+
+</style>
 </head>
 <body>
-    <div id="plainTextEditor">
-        Hello I am an element you would like to edit
-    </div>
-    <div id="cursor"></div>
 
-    <!-- This is the script block for your code. -->
     <script type="module">
-        import { PlainTextEditor } from './PlainTextEditor.js';
         
-        document.addEventListener('DOMContentLoaded', () => {
-            const editorElement = document.getElementById('plainTextEditor');
-            const cursorElement = document.getElementById('cursor');
+        import { PlainTextEditor } from './PlainTextEditor.js';
 
-            if (editorElement && cursorElement) {
-                // Instantiate the editor here when the class is available
-                // new PlainTextEditor(editorElement, cursorElement);
-                // For now, the text will be visible and the styles should be correct.
-            }
-        });
+        console.log("Program_Started\n");
+
+        //For the sake of example I fabricate an element
+
+            // Create a heading element (h1)
+                const heading = document.createElement("h1");
+
+                // Set the text content
+                heading.textContent = "Hello, World!";
+
+                // Append to the body
+                document.body.appendChild(heading);
+
+
+                const plainTextEditorElementTarget = heading;
+
+            //Then we wait for loading:
+
+            document.addEventListener('DOMContentLoaded', async () => {
+                let plainTextEditor = new PlainTextEditor();
+                let returnCatch = await plainTextEditor.liveEditElementData(plainTextEditorElementTarget);
+                console.log(returnCatch);
+                plainTextEditor = null; // Deletes undo/redo stacks
+                
+                // Only log "Program_Done" after everything is finished
+                console.log("Program_Done\n");
+            });
+
     </script>
+
 </body>
 </html>
